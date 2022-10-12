@@ -47,7 +47,7 @@ class Beta_Factor(Layer):
         char_intercept = tf.pad(beta_char, [[0, 0], [0, 0], [1, 0]], constant_values=1)
         new_char = char_intercept @ self.b
         new_factor = tf.expand_dims(factor, axis=-1)
-        return tf.squeeze(new_char @ new_factor), new_char
+        return tf.squeeze(new_char @ new_factor)
 
 
 class DeepFactorModel(Model):
@@ -59,9 +59,7 @@ class DeepFactorModel(Model):
         p,
         g_dim,
         hidden_sizes,
-        beta_hidden_sizes,
         l1_lam=0.1,
-        l1_lam_beta=0.1,
         activation="tanh",
         dropout=0.5,
         weight_params=[50, 5],
@@ -97,21 +95,13 @@ class DeepFactorModel(Model):
         self.norm_layer = Norm()
         self.weight_layer = Weight(weight_params)
         self.factor_layer = Factor()
-
-        self.beta_layers = []
-
-        for layer_size in beta_hidden_sizes:
-            self.beta_layers.append(
-                Dense(
-                    layer_size,
-                    activation=activation,
-                    kernel_regularizer=tf.keras.regularizers.L1(l1_lam_beta),
-                )
-            )
-            self.beta_layers.append(Dropout(dropout))
-
+        self.beta_transform = Dense(
+            n_beta,  # can change this param
+            activation=activation,
+            kernel_regularizer=l1_reg,
+        )
         self.beta_f_interaction = Beta_Factor(
-            n_beta=beta_hidden_sizes[-1], n_factor=hidden_sizes[-1] + g_dim
+            n_beta=n_beta, n_factor=hidden_sizes[-1] + g_dim
         )
 
     def call(self, inputs, training=True):
@@ -120,27 +110,25 @@ class DeepFactorModel(Model):
         ret = self.input_r(stock_ret)
         g = self.input_g(additional_factors)
         beta = self.input_beta_char(beta_char)
+        beta_transformed = self.beta_transform(beta)
 
         for layer in self.characteristics_layers:
             Z = layer(Z, training=training)
         normalized_Z = self.norm_layer(Z)
-
-        for layer in self.beta_layers:
-            beta = layer(beta, training=training)
 
         weight = self.weight_layer(normalized_Z)
         deep_factor = tf.reshape(
             self.factor_layer(weight, ret), [-1, self.hidden_sizes[-1]]
         )
         f_g = tf.concat([deep_factor, g], axis=1)
-        r, deep_beta = self.beta_f_interaction(beta, f_g, training=training)
+        beta_f = self.beta_f_interaction(beta_transformed, f_g)
 
-        return [deep_factor, Z, r, deep_beta]
+        return [deep_factor, Z, beta_f]
 
     def train_step(self, data):
         x, y = data
         with tf.GradientTape() as tape:
-            _, _, beta_f, beta = self(x, training=True)
+            _, _, beta_f = self(x, training=True)
             loss = self.compiled_loss(y, beta_f, regularization_losses=self.losses)
 
         gradients = tape.gradient(loss, self.trainable_variables)
@@ -161,39 +149,27 @@ def get_model_prediction(model, data, batch=60):
 
     in_factors = []
     in_chars = []
-    in_r = []
-    in_beta = []
-    # b = np.array(model.beta_f_interaction.get_weights())
+    b = np.array(model.beta_f_interaction.get_weights())
     for i in range(len(splits) - 1):
         start = splits[i]
         end = splits[i + 1]
         data_subset = [x[start:end] for x in data]
-        factor_subset, char_subset, r, beta = model(data_subset, training=False)
+        factor_subset, char_subset, _ = model(data_subset, training=False)
         in_factors.append(np.array(factor_subset).reshape(-1, 1))
         in_chars.append(np.array(char_subset))
-        in_r.append(np.array(r))
-        in_beta.append(np.array(beta))
     in_factors = np.vstack(in_factors)
     in_chars = np.vstack(in_chars)
-    in_r = np.vstack(in_r)
-    in_beta = np.vstack(in_beta)
 
-    return in_factors, in_chars, in_r, in_beta
+    return in_factors, in_chars, b
 
 
 def sequential_deep_factor(
-    result_path,
     input_data,
     n_layer,
     n_factor,
     g_dim,
-    benchmark,
     n_beta_char,
-    beta_hidden_sizes,
     l1_lam,
-    l1_lam_beta,
-    l1_lam_log,
-    l1_lam_beta_log,
     n_train=360,
     n_test=120,
     cv_index=0,
@@ -250,15 +226,7 @@ def sequential_deep_factor(
     for idx in range(n_factor):
         print("Factor Index:", idx)
         model = DeepFactorModel(
-            n_stock,
-            n_portfolio,
-            n_beta_char,
-            p,
-            g_dim,
-            hidden_sizes,
-            beta_hidden_sizes,
-            l1_lam,
-            l1_lam_beta,
+            n_stock, n_portfolio, n_beta_char, p, g_dim, hidden_sizes, l1_lam
         )
         model.compile(
             optimizer=tf.keras.optimizers.RMSprop(learning_rate=learning_rate),
@@ -272,12 +240,8 @@ def sequential_deep_factor(
         )
 
         # in case GPU memory full
-        in_factors, in_chars, in_r, in_beta = get_model_prediction(
-            model, train_data, batch=60
-        )
-        out_factors, out_chars, out_r, out_beta = get_model_prediction(
-            model, test_data, batch=60
-        )
+        in_factors, in_chars, _ = get_model_prediction(model, train_data, batch=60)
+        out_factors, out_chars, b = get_model_prediction(model, test_data, batch=60)
 
         loss = np.array(history.history["loss"])
 
@@ -290,14 +254,6 @@ def sequential_deep_factor(
         g_dim += 1
         train_g = np.hstack([train_g, train_factors[-1]])
         test_g = np.hstack([test_g, test_factors[-1]])
-
-        rhat = pd.DataFrame(
-            np.vstack([in_r, out_r]), columns=[f"rank_{i}" for i in range(n_stock)]
-        )
-
-        rhat.to_parquet(
-            f"{result_path}/rhat{benchmark}_{n_layer}_{n_factor}_{l1_lam_log}_{l1_lam_beta_log}_{idx}_cv{cv_index}.parquet"
-        )
 
     train_factors = np.hstack(train_factors)
     test_factors = np.hstack(test_factors)
@@ -319,21 +275,10 @@ def sequential_deep_factor(
     )
     deep_chars.columns = [f"DC_{i}" for i in range(n_factor)]
 
-    deep_beta = np.vstack([in_beta, out_beta])
-    deep_beta = pd.concat(
-        {i: pd.DataFrame(deep_beta[i]) for i in range(T)}, names=["month"]
-    )
-    deep_beta.columns = [f"DB_{i}" for i in range(g_dim)]  # beta for [g, f]
-
-    rhat = pd.DataFrame(
-        np.vstack([in_r, out_r]), columns=[f"rank_{i}" for i in range(n_stock)]
-    )
-
     return (
         deep_factors,
         deep_chars,
-        deep_beta,
-        rhat,
+        pd.DataFrame(b[0], columns=[f"b_{i}" for i in range(b[0].shape[1])]),
         loss_sequence,
     )
 
