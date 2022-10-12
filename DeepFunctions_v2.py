@@ -182,14 +182,18 @@ def get_model_prediction(model, data, batch=60):
 
 
 def sequential_deep_factor(
+    result_path,
     input_data,
     n_layer,
     n_factor,
     g_dim,
+    benchmark,
     n_beta_char,
     beta_hidden_sizes,
     l1_lam,
     l1_lam_beta,
+    l1_lam_log,
+    l1_lam_beta_log,
     n_train=360,
     n_test=120,
     cv_index=0,
@@ -286,6 +290,14 @@ def sequential_deep_factor(
         g_dim += 1
         train_g = np.hstack([train_g, train_factors[-1]])
         test_g = np.hstack([test_g, test_factors[-1]])
+
+        rhat = pd.DataFrame(
+            np.vstack([in_r, out_r]), columns=[f"rank_{i}" for i in range(n_stock)]
+        )
+
+        rhat.to_parquet(
+            f"{result_path}/rhat{benchmark}_{n_layer}_{n_factor}_{l1_lam_log}_{l1_lam_beta_log}_{idx}_cv{cv_index}.parquet"
+        )
 
     train_factors = np.hstack(train_factors)
     test_factors = np.hstack(test_factors)
