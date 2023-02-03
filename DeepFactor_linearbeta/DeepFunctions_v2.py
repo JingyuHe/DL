@@ -97,7 +97,7 @@ class DeepFactorModel(Model):
         self.factor_layer = Factor()
         self.beta_transform = Dense(
             n_beta,  # can change this param
-            activation=activation,
+            activation="linear", # force linear transformation for beta
             kernel_regularizer=l1_reg,
         )
         self.beta_f_interaction = Beta_Factor(
