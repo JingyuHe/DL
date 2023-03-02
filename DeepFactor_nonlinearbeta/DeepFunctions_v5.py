@@ -182,13 +182,12 @@ class DeepFactorModel(Model):
         self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
         self.avg_loss.update_state(loss)
         self.mse_metric.update_state(y, beta_f)
-        gradients_factor = factor_tape.gradient(Z, factor_x)
-        gradients_beta = beta_tape.gradient(beta, beta_x)
+        gradients_factor = factor_tape.gradient(loss, factor_x)
+        gradients_beta = beta_tape.gradient(loss, beta_x)
 
         return {"loss": self.avg_loss.result(), 
                 "mse": self.mse_metric.result(), 
                 "gradients": gradients,
-                "input": x,
                 "gradients_factor": gradients_factor,
                 "gradients_beta": gradients_beta}
 
