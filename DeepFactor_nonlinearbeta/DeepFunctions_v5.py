@@ -166,7 +166,7 @@ class DeepFactorModel(Model):
         f_g = tf.concat([deep_factor, g], axis=1)
         r, deep_beta, factor = self.beta_f_interaction(beta, f_g) #, training=training
 
-        return [deep_factor, Z, r, deep_beta, factor, beta]
+        return [deep_factor, Z, r, deep_beta, factor]
 
     def train_step(self, data):
         x, y = data
@@ -175,7 +175,7 @@ class DeepFactorModel(Model):
         with tf.GradientTape() as tape, tf.GradientTape() as factor_tape, tf.GradientTape() as beta_tape:
             factor_tape.watch(factor_x)
             beta_tape.watch(beta_x)
-            _, Z, beta_f, _, _, beta = self(x, training=True)
+            _, _, beta_f, _, _ = self(x, training=True)
             loss = self.compiled_loss(y, beta_f, regularization_losses=self.losses)
 
         gradients = tape.gradient(loss, self.trainable_variables)
@@ -210,7 +210,7 @@ def get_model_prediction(model, data, batch=60):
         start = splits[i]
         end = splits[i + 1]
         data_subset = [x[start:end] for x in data]
-        factor_subset, char_subset, r, beta, factor, _ = model(data_subset, training=False)
+        factor_subset, char_subset, r, beta, factor = model(data_subset, training=False)
         in_factors.append(np.array(factor_subset).reshape(-1, 1))
         in_chars.append(np.array(char_subset))
         in_r.append(np.array(r))
